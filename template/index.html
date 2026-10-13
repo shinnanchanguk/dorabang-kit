@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>도라방 미리보기</title>
+    <style>
+      :root { color-scheme: light; --ink: #242824; --paper: #f2ede4; --card: #fbf8f1; --line: #c9c2b4; --accent: #2f4a3a; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink); font-family: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; word-break: keep-all; overflow-wrap: break-word; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+      .bar { position: fixed; left: 12px; top: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; pointer-events: none; }
+      .bar > * { pointer-events: auto; }
+      button { min-height: 40px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--ink); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+      button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fbf8f1; }
+      button.save { background: #e2462f; border-color: #e2462f; color: #fbf8f1; }
+      .panel { position: fixed; right: 12px; bottom: 12px; width: min(340px, calc(100vw - 24px)); max-height: 60vh; overflow: auto; padding: 14px; border-radius: 16px; background: var(--card); box-shadow: 0 12px 32px rgba(40, 32, 20, 0.2); font-size: 14px; line-height: 1.6; }
+      .panel h2 { margin: 0 0 6px; font-size: 15px; }
+      .panel ul { margin: 0; padding-left: 18px; }
+      .ok { color: #2f6b3a; } .no { color: #a8321d; }
+      .hint { position: fixed; left: 12px; bottom: 12px; max-width: 360px; padding: 10px 12px; border-radius: 12px; background: rgba(251, 248, 241, 0.92); font-size: 13px; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div class="bar" id="bar"></div>
+    <section class="panel" id="panel" aria-live="polite"></section>
+    <p class="hint" id="hint"></p>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
