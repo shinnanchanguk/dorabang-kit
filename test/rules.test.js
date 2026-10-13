@@ -75,4 +75,6 @@ test("same refusals as the server: extra blocks, sheared matrix, normalized 1, o
   assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.accessors[0].normalized = 1; } }), anchors).ok, false);
   assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.scenes.push({ nodes: [] }); } }), anchors).ok, false);
   assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.bufferViews.push(null); } }), anchors).ok, false);
+  assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.skins = { 0: { joints: [0] } }; } }), anchors).ok, false, "skins as object");
+  assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.meshes[0].primitives[0].attributes.Position = g.meshes[0].primitives[0].attributes.POSITION; } }), anchors).ok, false, "attribute alias");
 });

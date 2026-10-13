@@ -216,12 +216,17 @@ const whole = (value) => value === undefined ? 0 : Number.isSafeInteger(value) &
 const SHAPE = { accessorCount: 1_000_000, decodedVertices: 2_000_000, views: 2_000, accessors: 4_000, primitives: 1_200, accessorBytes: 64 * 1024 * 1024 };
 const TYPE_WIDTH = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 };
 const INDEX_TYPES = new Set([5121, 5123, 5125]);
+const ATTRIBUTE_NAME = /^(POSITION|NORMAL|TANGENT|TEXCOORD_\d+|COLOR_\d+|JOINTS_\d+|WEIGHTS_\d+|_[A-Z0-9_]+)$/;
 /** 모양 자료 표의 번호·길이·자리·자료형이 제자리인지(서버 shapeTables 와 같다). */
 function shapeTables(gltf, bin) {
   const isObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
   const list = (value) => value === undefined ? [] : Array.isArray(value) ? value : null;
   const views = list(gltf.bufferViews), accessors = list(gltf.accessors), meshes = list(gltf.meshes), nodes = list(gltf.nodes), scenes = list(gltf.scenes);
   if (!views || !accessors || !meshes || !nodes || !scenes) return "모양 자료 표가 이상해요.";
+  // 모든 표는 목록이어야 한다(객체로 쓰면 그리는 쪽은 번호로 읽어 길이 검사를 피한다, 서버와 같다).
+  for (const key of ["skins", "animations", "cameras", "materials", "images", "buffers", "textures", "samplers", "extensionsUsed", "extensionsRequired"]) {
+    if (list(gltf[key]) === null) return "모양 자료 표가 이상해요.";
+  }
   if (views.length > SHAPE.views || accessors.length > SHAPE.accessors) return "모양 자료가 너무 많아요.";
   if (scenes.length > 1 || whole(gltf.scene) === null || (gltf.scene ?? 0) !== 0) return "장면(scene)은 하나만 넣어 주세요.";
   let viewBytes = 0;
@@ -264,6 +269,12 @@ function shapeTables(gltf, bin) {
       const mode = whole(p.mode ?? 4), indices = p.indices === undefined ? undefined : whole(p.indices);
       if (mode === null || indices === null || (indices !== undefined && (indices >= accessors.length || !INDEX_TYPES.has(accessors[indices].componentType ?? -1)))) return "모양 조각 자료가 이상해요.";
       if (p.attributes !== undefined && !isObject(p.attributes)) return "모양 조각 자료가 이상해요.";
+      if (p.targets !== undefined && !Array.isArray(p.targets)) return "모양 조각 자료가 이상해요.";
+      if (Object.keys(p.attributes ?? {}).some((name) => !ATTRIBUTE_NAME.test(name))) return "모양 자료 이름이 glTF 규칙과 달라요. 내보내기 도구로 다시 저장해 주세요.";
+      if (indices !== undefined) {
+        const indexView = whole(accessors[indices].bufferView);
+        if (indexView !== null && views[indexView]?.byteStride !== undefined) return "꼭짓점 번호 자료에는 간격(byteStride)을 둘 수 없어요.";
+      }
       for (const value of Object.values(p.attributes ?? {})) { const at = whole(value); if (at === null || at >= accessors.length) return "모양 조각 자료가 이상해요."; }
     }
   }
