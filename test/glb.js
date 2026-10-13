@@ -1,5 +1,5 @@
 // 시험용 .glb 를 손으로 만든다(상자들). three 없이 돌아간다.
-export function makeGlb(boxes, { extra = {} } = {}) {
+export function makeGlb(boxes, { extra = {}, mutate = null } = {}) {
   const positions = [], indices = [], meshes = [], nodes = [], accessors = [], views = [];
   let posOffset = 0, idxOffset = 0;
   const posChunks = [], idxChunks = [];
@@ -25,6 +25,7 @@ export function makeGlb(boxes, { extra = {} } = {}) {
   }
   const bin = new Uint8Array(offset); let at = 0; for (const part of parts) { bin.set(part, at); at += part.byteLength; }
   const gltf = { asset: { version: "2.0" }, scene: 0, scenes: [{ nodes: nodes.map((_, i) => i) }], nodes, meshes, accessors, bufferViews: views, buffers: [{ byteLength: bin.byteLength }], ...extra };
+  if (mutate) mutate(gltf);
   let json = new TextEncoder().encode(JSON.stringify(gltf));
   const jsonPad = (4 - (json.byteLength % 4)) % 4; if (jsonPad) { const j = new Uint8Array(json.byteLength + jsonPad).fill(0x20); j.set(json); json = j; }
   const total = 12 + 8 + json.byteLength + 8 + bin.byteLength;

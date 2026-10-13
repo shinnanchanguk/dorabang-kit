@@ -98,13 +98,29 @@ export function checkAnchors(o) {
 }
 
 // ── glb ───────────────────────────────────────────────────────────────────────────────
-function parseGlb(bytes, maxBytes) {
-  if (bytes.byteLength < 20 || bytes.byteLength > maxBytes) return `파일 크기는 ${Math.round(maxBytes / 1024 / 1024 * 10) / 10}MB 이하여야 해요.`;
+/**
+ * .glb 덩어리 배치는 정확히 하나: 머리글 → JSON 덩어리 하나 → (있으면) BIN 덩어리 하나 → 파일 끝.
+ * 덩어리를 덧붙이면 검사하는 쪽과 그리는 쪽이 다른 덩어리를 읽을 수 있어서 서버가 거절한다(서버 glbLayout 과 같다).
+ */
+function glbLayout(bytes) {
+  if (bytes.byteLength < 20) return "파일 구조를 읽지 못했어요.";
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== 0x46546c67 || view.getUint32(4, true) !== 2) return "glTF 2.0 바이너리(.glb) 파일이 아니에요.";
   if (view.getUint32(8, true) !== bytes.byteLength) return "파일 길이가 머리글과 달라요.";
   const jsonLength = view.getUint32(12, true);
-  if (view.getUint32(16, true) !== 0x4e4f534a || jsonLength < 2 || 20 + jsonLength > bytes.byteLength) return "파일 구조를 읽지 못했어요.";
+  if (view.getUint32(16, true) !== 0x4e4f534a || jsonLength < 2 || jsonLength % 4 !== 0 || 20 + jsonLength > bytes.byteLength) return "파일 구조를 읽지 못했어요.";
+  const start = 20 + jsonLength;
+  if (start === bytes.byteLength) return { jsonLength, bin: null };
+  if (start + 8 > bytes.byteLength) return "파일 구조를 읽지 못했어요.";
+  const binLength = view.getUint32(start, true);
+  if (view.getUint32(start + 4, true) !== 0x004e4942 || binLength % 4 !== 0 || start + 8 + binLength !== bytes.byteLength) return "파일 안에 덩어리가 덧붙어 있어요. 내보내기 도구로 다시 저장해 주세요.";
+  return { jsonLength, bin: bytes.subarray(start + 8, start + 8 + binLength) };
+}
+function parseGlb(bytes, maxBytes) {
+  if (bytes.byteLength < 20 || bytes.byteLength > maxBytes) return `파일 크기는 ${Math.round(maxBytes / 1024 / 1024 * 10) / 10}MB 이하여야 해요.`;
+  const layout = glbLayout(bytes);
+  if (typeof layout === "string") return layout;
+  const { jsonLength } = layout;
   try {
     const gltf = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(20, 20 + jsonLength)));
     if (!gltf || typeof gltf !== "object" || gltf.asset?.version !== "2.0") return "glTF 2.0 파일이 아니에요.";
@@ -121,12 +137,8 @@ function extensionKeys(value, depth = 0, out = []) {
   return out;
 }
 function binChunk(bytes, jsonLength) {
-  const start = 20 + jsonLength;
-  if (start + 8 > bytes.byteLength) return null;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const length = view.getUint32(start, true);
-  if (view.getUint32(start + 4, true) !== 0x004e4942 || start + 8 + length > bytes.byteLength) return null;
-  return bytes.subarray(start + 8, start + 8 + length);
+  const layout = glbLayout(bytes);
+  return typeof layout === "string" || layout.jsonLength !== jsonLength ? null : layout.bin;
 }
 export function imageSize(data) {
   if (!data || data.byteLength < 30) return null;
@@ -158,7 +170,20 @@ function multiply(a, b) {
   return out;
 }
 function local(node) {
-  if (node.matrix) return node.matrix.length === 16 && node.matrix.every(Number.isFinite) ? node.matrix : null;
+  if (node.matrix !== undefined) {
+    const m = node.matrix;
+    if (!Array.isArray(m) || m.length !== 16 || !m.every((v) => typeof v === "number" && Number.isFinite(v))) return null;
+    // 그리는 쪽(three.js)은 matrix 를 위치·회전·크기로 나눴다가 다시 합친다. 기울임·원근이 있는 행렬은 받지 않는다(서버와 같다).
+    if (m[3] !== 0 || m[7] !== 0 || m[11] !== 0 || m[15] !== 1) return null;
+    const axes = [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]];
+    const len = axes.map((a) => Math.hypot(a[0], a[1], a[2]));
+    if (len.some((l) => l < 1e-9)) return null;
+    for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) {
+      const dot = axes[i][0] * axes[j][0] + axes[i][1] * axes[j][1] + axes[i][2] * axes[j][2];
+      if (Math.abs(dot) > 1e-5 * len[i] * len[j]) return null;
+    }
+    return m;
+  }
   const [tx, ty, tz] = node.translation ?? [0, 0, 0];
   const [x, y, z, w] = node.rotation ?? [0, 0, 0, 1];
   const [sx, sy, sz] = node.scale ?? [1, 1, 1];
@@ -187,6 +212,76 @@ const COMPONENTS = {
   5122: { size: 2, read: (v, o) => v.getInt16(o, true), norm: 32767 },
   5123: { size: 2, read: (v, o) => v.getUint16(o, true), norm: 65535 },
 };
+const whole = (value) => value === undefined ? 0 : Number.isSafeInteger(value) && value >= 0 ? value : null;
+const SHAPE = { accessorCount: 1_000_000, decodedVertices: 2_000_000, views: 2_000, accessors: 4_000, primitives: 1_200, accessorBytes: 64 * 1024 * 1024 };
+const TYPE_WIDTH = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 };
+const INDEX_TYPES = new Set([5121, 5123, 5125]);
+/** 모양 자료 표의 번호·길이·자리·자료형이 제자리인지(서버 shapeTables 와 같다). */
+function shapeTables(gltf, bin) {
+  const isObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  const list = (value) => value === undefined ? [] : Array.isArray(value) ? value : null;
+  const views = list(gltf.bufferViews), accessors = list(gltf.accessors), meshes = list(gltf.meshes), nodes = list(gltf.nodes), scenes = list(gltf.scenes);
+  if (!views || !accessors || !meshes || !nodes || !scenes) return "모양 자료 표가 이상해요.";
+  if (views.length > SHAPE.views || accessors.length > SHAPE.accessors) return "모양 자료가 너무 많아요.";
+  if (scenes.length > 1 || whole(gltf.scene) === null || (gltf.scene ?? 0) !== 0) return "장면(scene)은 하나만 넣어 주세요.";
+  let viewBytes = 0;
+  for (const view of views) {
+    if (!isObject(view)) return "모양 자료 칸이 이상해요.";
+    const start = whole(view.byteOffset), length = whole(view.byteLength), buffer = whole(view.buffer);
+    if (start === null || length === null || buffer !== 0) return "모양 자료 칸이 이상해요.";
+    if (!bin || start + length > bin.byteLength) return "모양 자료 칸이 파일 범위를 벗어나요.";
+    if (view.byteStride !== undefined) {
+      const stride = whole(view.byteStride);
+      if (stride === null || stride < 4 || stride > 252 || stride % 4 !== 0) return "모양 자료 간격이 이상해요.";
+    }
+    viewBytes += length;
+    if (viewBytes > bin.byteLength * 2) return "모양 자료 칸이 너무 많이 겹쳐 있어요.";
+  }
+  let accessorBytes = 0;
+  for (const accessor of accessors) {
+    if (!isObject(accessor)) return "모양 자료 번호가 이상해요.";
+    if (accessor.sparse !== undefined) return "흩어 둔(sparse) 자리 자료는 쓸 수 없어요. 내보내기 도구로 다시 저장해 주세요.";
+    if (accessor.bufferView === undefined) return "모양 자료는 파일 안에 담아 주세요.";
+    const offset = whole(accessor.byteOffset), count = whole(accessor.count), view = whole(accessor.bufferView);
+    if (offset === null || count === null || view === null || view >= views.length) return "모양 자료 번호가 이상해요.";
+    if (count > SHAPE.accessorCount) return "모양 자료 하나가 너무 커요.";
+    const componentType = typeof accessor.componentType === "number" ? accessor.componentType : -1;
+    const size = COMPONENTS[componentType]?.size ?? (componentType === 5125 ? 4 : 0);
+    const width = typeof accessor.type === "string" ? TYPE_WIDTH[accessor.type] : undefined;
+    if (!size || !width) return "모양 자료형이 이상해요.";
+    if (accessor.normalized !== undefined && typeof accessor.normalized !== "boolean") return "모양 자료형이 이상해요.";
+    if (offset % size !== 0 || ((whole(views[view].byteOffset) ?? 0) + offset) % size !== 0) return "모양 자료 시작 자리가 자료형 크기에 맞지 않아요.";
+    accessorBytes += count * size * width;
+    if (accessorBytes > SHAPE.accessorBytes) return "모양 자료가 너무 커요.";
+  }
+  let primitives = 0;
+  for (const mesh of meshes) {
+    const prims = isObject(mesh) ? list(mesh.primitives) : null;
+    if (!prims) return "모양 조각 자료가 이상해요.";
+    for (const p of prims) {
+      if (!isObject(p)) return "모양 조각 자료가 이상해요.";
+      if (++primitives > SHAPE.primitives) return "모양 조각(primitive)이 너무 많아요.";
+      const mode = whole(p.mode ?? 4), indices = p.indices === undefined ? undefined : whole(p.indices);
+      if (mode === null || indices === null || (indices !== undefined && (indices >= accessors.length || !INDEX_TYPES.has(accessors[indices].componentType ?? -1)))) return "모양 조각 자료가 이상해요.";
+      if (p.attributes !== undefined && !isObject(p.attributes)) return "모양 조각 자료가 이상해요.";
+      for (const value of Object.values(p.attributes ?? {})) { const at = whole(value); if (at === null || at >= accessors.length) return "모양 조각 자료가 이상해요."; }
+    }
+  }
+  for (const node of nodes) {
+    if (!isObject(node)) return "부품 연결이 이상해요.";
+    if (node.mesh !== undefined) { const mesh = whole(node.mesh); if (mesh === null || mesh >= meshes.length) return "부품 연결이 이상해요."; }
+    const children = list(node.children);
+    if (!children) return "부품 연결이 이상해요.";
+    for (const child of children) { const at = whole(child); if (at === null || at >= nodes.length) return "부품 연결이 이상해요."; }
+  }
+  const scene = scenes[0];
+  if (scene !== undefined) {
+    const roots = isObject(scene) ? list(scene.nodes) : null;
+    if (!roots) return "부품 연결이 이상해요.";
+    for (const root of roots) { const at = whole(root); if (at === null || at >= nodes.length) return "부품 연결이 이상해요."; }
+  }
+  return null;
+}
 /** 실제 꼭짓점을 읽어 범위를 구한다(적어 둔 min·max 가 아니라). 흩어 둔(sparse) 자리는 받지 않는다. */
 function positionBox(gltf, bin, index) {
   const accessor = gltf.accessors?.[index];
@@ -196,7 +291,7 @@ function positionBox(gltf, bin, index) {
   const count = accessor.count ?? 0;
   if (!component || !Number.isInteger(count) || count < 0) return "모양의 자리 자료형이 이상해요.";
   if (count === 0) return null;
-  if (accessor.bufferView === undefined) return { min: [0, 0, 0], max: [0, 0, 0] };
+  if (accessor.bufferView === undefined) return "모양의 자리 자료가 파일에 담겨 있지 않아요.";
   const view = gltf.bufferViews?.[accessor.bufferView];
   if (!view || !bin || (view.buffer ?? 0) !== 0) return "모양 자료를 찾지 못했어요.";
   const element = component.size * 3, stride = view.byteStride ?? element;
@@ -212,7 +307,7 @@ function positionBox(gltf, bin, index) {
     const at = start + i * stride;
     for (let axis = 0; axis < 3; axis++) {
       let value = component.read(data, at + axis * component.size);
-      if (accessor.normalized && component.norm !== 1) value = signed ? Math.max(value / component.norm, -1) : value / component.norm;
+      if (accessor.normalized === true && component.norm !== 1) value = signed ? Math.max(value / component.norm, -1) : value / component.norm;
       if (!Number.isFinite(value)) return "모양 자리 값이 이상해요.";
       if (value < box.min[axis]) box.min[axis] = value;
       if (value > box.max[axis]) box.max[axis] = value;
@@ -240,12 +335,24 @@ function structural(bytes, gltf, jsonLength, limits, label) {
     const size = imageSize(bin?.subarray(view?.byteOffset ?? 0, (view?.byteOffset ?? 0) + (view?.byteLength ?? 0)));
     if (!size || size.width > LIMITS.imageSide || size.height > LIMITS.imageSide) return `그림 크기는 가로세로 ${LIMITS.imageSide}픽셀 이하여야 해요.`;
   }
+  const tables = shapeTables(gltf, bin);
+  if (tables) return tables;
   if ((gltf.materials ?? []).length > limits.materials) return `${label}에 재질은 ${limits.materials}개까지 쓸 수 있어요.`;
   const nodes = gltf.nodes ?? [];
   if (nodes.length > limits.nodes) return `${label}에 부품이 너무 많아요(${nodes.length}개, ${limits.nodes}개 이하).`;
   if ((gltf.animations ?? []).length) return "움직임(애니메이션)은 넣지 않아요. 움직이는 연출은 도름스가 준비한 것 가운데 고르면 돼요.";
   if ((gltf.skins ?? []).length) return "뼈대(skin)는 넣지 않아요.";
   if ((gltf.cameras ?? []).length || nodes.some((n) => n.camera !== undefined)) return "카메라는 넣지 않아요.";
+  // 같은 자리 자료를 여러 조각이 함께 쓰면 한 번만 읽고, 읽는 꼭짓점 수 전체에 상한을 둔다(서버와 같다).
+  const decoded = new Map();
+  let decodedVertices = 0;
+  const boxOf = (index) => {
+    if (decoded.has(index)) return decoded.get(index);
+    decodedVertices += gltf.accessors?.[index]?.count ?? 0;
+    const result = decodedVertices > SHAPE.decodedVertices ? "모양의 꼭짓점이 너무 많아요." : positionBox(gltf, bin, index);
+    decoded.set(index, result);
+    return result;
+  };
   const meshTriangles = [], meshBoxes = [];
   for (const mesh of gltf.meshes ?? []) {
     let count = 0, box = null;
@@ -254,7 +361,7 @@ function structural(bytes, gltf, jsonLength, limits, label) {
       if (p.targets?.length) return "모양이 바뀌는 부품(morph)은 쓸 수 없어요.";
       const positionIndex = p.attributes?.POSITION;
       if (typeof positionIndex !== "number") return "모양의 자리 자료(POSITION)가 없어요. 내보내기 도구로 다시 저장해 주세요.";
-      const actual = positionBox(gltf, bin, positionIndex);
+      const actual = boxOf(positionIndex);
       if (typeof actual === "string") return actual;
       const accessor = gltf.accessors?.[p.indices ?? positionIndex];
       count += Math.floor((accessor?.count ?? 0) / 3);
@@ -318,8 +425,12 @@ function walkable(boxes, anchors) {
   return null;
 }
 
+const UNREADABLE = { ok: false, reason: "파일 구조를 읽지 못했어요. 내보내기 도구로 다시 저장해 주세요." };
 /** room.glb 검사(서버 checkDorabangRoom 과 같다). */
 export function checkRoom(bytes, anchors) {
+  try { return checkRoomInner(bytes, anchors); } catch { return UNREADABLE; }
+}
+function checkRoomInner(bytes, anchors) {
   const parsed = parseGlb(bytes, LIMITS.roomBytes);
   if (typeof parsed === "string") return { ok: false, reason: parsed };
   const result = structural(bytes, parsed.gltf, parsed.jsonLength, { images: LIMITS.roomImages, triangles: LIMITS.roomTriangles, materials: LIMITS.roomMaterials, nodes: LIMITS.roomNodes }, "교실 꾸밈");
@@ -343,6 +454,9 @@ export function checkRoom(bytes, anchors) {
 
 /** effect.glb 검사(서버 checkDorabangEffect 과 같다). */
 export function checkEffect(bytes) {
+  try { return checkEffectInner(bytes); } catch { return UNREADABLE; }
+}
+function checkEffectInner(bytes) {
   const parsed = parseGlb(bytes, LIMITS.effectBytes);
   if (typeof parsed === "string") return { ok: false, reason: parsed };
   const result = structural(bytes, parsed.gltf, parsed.jsonLength, { images: LIMITS.effectImages, triangles: LIMITS.effectTriangles, materials: 8, nodes: 40 }, "연출 모양");

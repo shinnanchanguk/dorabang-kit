@@ -1,6 +1,6 @@
 {
   "name": "dorabang-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "도름스쿨 도라방(선생님마다 하나인 교실 라이브 방)을 AI 와 함께 꾸미고 보내는 도구",
   "type": "module",
   "bin": {

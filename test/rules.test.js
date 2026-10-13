@@ -51,3 +51,28 @@ test("animations and outside files are refused", () => {
   assert.match(checkRoom(makeGlb(chairs, { extra: { animations: [{ channels: [], samplers: [] }] } }), anchors).reason, /움직임/);
   assert.match(checkRoom(makeGlb(chairs, { extra: { images: [{ uri: "https://example.com/a.png" }] } }), anchors).reason, /그림/);
 });
+
+/** 만든 .glb 뒤에 덩어리를 하나 더 붙인다(길이 머리글도 맞춘다). */
+function appendChunk(glb, type, data) {
+  const padded = new Uint8Array(Math.ceil(data.byteLength / 4) * 4); padded.set(data);
+  const out = new Uint8Array(glb.byteLength + 8 + padded.byteLength);
+  out.set(glb);
+  const view = new DataView(out.buffer);
+  view.setUint32(8, out.byteLength, true);
+  view.setUint32(glb.byteLength, padded.byteLength, true);
+  view.setUint32(glb.byteLength + 4, type, true);
+  out.set(padded, glb.byteLength + 8);
+  return out;
+}
+test("same refusals as the server: extra blocks, sheared matrix, normalized 1, odd tables", () => {
+  const honest = makeGlb(chairs);
+  assert.equal(checkRoom(honest, anchors).ok, true);
+  const twoBins = checkRoom(appendChunk(honest, 0x004e4942, new Uint8Array(16)), anchors);
+  assert.equal(twoBins.ok, false);
+  assert.match(twoBins.reason, /덧붙어/);
+  assert.equal(checkRoom(appendChunk(honest, 0x4e4f534a, new TextEncoder().encode("{}  ")), anchors).ok, false);
+  assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.nodes[0].matrix = [1, 0, -0.42, 0, 0, 1, 0, 0, -1.39, 0, 1, 0, 0, 0, 0, 1]; } }), anchors).ok, false);
+  assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.accessors[0].normalized = 1; } }), anchors).ok, false);
+  assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.scenes.push({ nodes: [] }); } }), anchors).ok, false);
+  assert.equal(checkRoom(makeGlb(chairs, { mutate: (g) => { g.bufferViews.push(null); } }), anchors).ok, false);
+});
