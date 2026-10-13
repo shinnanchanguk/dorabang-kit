@@ -364,9 +364,10 @@ function structural(bytes, gltf, jsonLength, limits, label) {
     decoded.set(index, result);
     return result;
   };
-  const meshTriangles = [], meshBoxes = [];
+  const meshTriangles = [], meshBoxes = [], meshDraws = [];
   for (const mesh of gltf.meshes ?? []) {
     let count = 0, box = null;
+    meshDraws.push((mesh.primitives ?? []).length);
     for (const p of mesh.primitives ?? []) {
       if ((p.mode ?? 4) !== 4) return "면(삼각형)으로 된 모양만 쓸 수 있어요.";
       if (p.targets?.length) return "모양이 바뀌는 부품(morph)은 쓸 수 없어요.";
@@ -375,13 +376,16 @@ function structural(bytes, gltf, jsonLength, limits, label) {
       const actual = boxOf(positionIndex);
       if (typeof actual === "string") return actual;
       const accessor = gltf.accessors?.[p.indices ?? positionIndex];
-      count += Math.floor((accessor?.count ?? 0) / 3);
+      const drawn = Math.floor((accessor?.count ?? 0) / 3);
+      if (drawn < 1) return "아무것도 그리지 않는 모양 조각이 있어요. 내보내기 도구로 다시 저장해 주세요.";
+      count += drawn;
       if (actual) box = box ? { min: box.min.map((v, i) => Math.min(v, actual.min[i])), max: box.max.map((v, i) => Math.max(v, actual.max[i])) } : actual;
     }
     meshTriangles.push(count); meshBoxes.push(box);
   }
   const roots = gltf.scenes?.[gltf.scene ?? 0]?.nodes ?? [];
-  const boxes = []; let triangles = 0, visits = 0;
+  // 그릴 물체 수 = 부품마다 그 모양의 조각 수의 합(서버와 같다).
+  const boxes = []; let triangles = 0, visits = 0, draws = 0;
   const walk = (index, parent, path) => {
     if (++visits > limits.nodes * 4) return "부품 연결이 너무 깊어요.";
     const node = nodes[index];
@@ -391,6 +395,8 @@ function structural(bytes, gltf, jsonLength, limits, label) {
     const world = multiply(parent, m);
     if (typeof node.mesh === "number") {
       triangles += meshTriangles[node.mesh] ?? 0;
+      draws += meshDraws[node.mesh] ?? 0;
+      if (draws > limits.draws) return `${label}에서 그려야 할 조각이 너무 많아요(같은 부품을 너무 많이 되풀이했어요, ${limits.draws}개 이하).`;
       const box = meshBoxes[node.mesh];
       if (box) boxes.push(transformBox(world, box.min, box.max));
     }
@@ -444,7 +450,7 @@ export function checkRoom(bytes, anchors) {
 function checkRoomInner(bytes, anchors) {
   const parsed = parseGlb(bytes, LIMITS.roomBytes);
   if (typeof parsed === "string") return { ok: false, reason: parsed };
-  const result = structural(bytes, parsed.gltf, parsed.jsonLength, { images: LIMITS.roomImages, triangles: LIMITS.roomTriangles, materials: LIMITS.roomMaterials, nodes: LIMITS.roomNodes }, "교실 꾸밈");
+  const result = structural(bytes, parsed.gltf, parsed.jsonLength, { images: LIMITS.roomImages, triangles: LIMITS.roomTriangles, materials: LIMITS.roomMaterials, nodes: LIMITS.roomNodes, draws: 1200 }, "교실 꾸밈");
   if (typeof result === "string") return { ok: false, reason: result };
   const eps = 0.02;
   for (const b of result.boxes) {
@@ -470,7 +476,7 @@ export function checkEffect(bytes) {
 function checkEffectInner(bytes) {
   const parsed = parseGlb(bytes, LIMITS.effectBytes);
   if (typeof parsed === "string") return { ok: false, reason: parsed };
-  const result = structural(bytes, parsed.gltf, parsed.jsonLength, { images: LIMITS.effectImages, triangles: LIMITS.effectTriangles, materials: 8, nodes: 40 }, "연출 모양");
+  const result = structural(bytes, parsed.gltf, parsed.jsonLength, { images: LIMITS.effectImages, triangles: LIMITS.effectTriangles, materials: 8, nodes: 40, draws: 32 }, "연출 모양");
   if (typeof result === "string") return { ok: false, reason: result };
   if (result.boxes.some((b) => b.min.some((v) => v < -0.51) || b.max.some((v) => v > 0.51))) return { ok: false, reason: "연출 모양은 가운데가 원점인 1m 상자 안에 들어가야 해요." };
   return { ok: true, triangles: result.triangles };
