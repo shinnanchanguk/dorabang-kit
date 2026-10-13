@@ -396,7 +396,7 @@ function structural(bytes, gltf, jsonLength, limits, label) {
     if (typeof node.mesh === "number") {
       triangles += meshTriangles[node.mesh] ?? 0;
       draws += meshDraws[node.mesh] ?? 0;
-      if (draws > limits.draws) return `${label}에서 그려야 할 조각이 너무 많아요(같은 부품을 너무 많이 되풀이했어요, ${limits.draws}개 이하).`;
+      if (draws > limits.draws) return `${label}에서 그려야 할 조각이 너무 많아요(${limits.draws}개 이하). 부품을 합치거나 같은 부품을 덜 되풀이해 주세요.`;
       const box = meshBoxes[node.mesh];
       if (box) boxes.push(transformBox(world, box.min, box.max));
     }
